@@ -68,6 +68,7 @@ evaluate against in this report; Section~\ref{sec:method} explains the
 trade-off this implies.
 
 \section{Related Work}
+\label{sec:related}
 \textbf{Augmented reality.} Azuma's survey~\cite{azuma1997survey} defines
 AR by three properties: combining real and virtual content, real-time
 interactivity, and registration in 3D. Our webcam fallback satisfies the
@@ -176,18 +177,52 @@ placement via the standard \texttt{immersive-ar} session and hit-test
 source API, and would provide true registration on supported hardware.
 
 \section{Experimental Results}
-% TODO(fill in after live local-generation + real webcam testing is done):
-%  - table/list of >=3 tested prompts, observed end-to-end generation
-%    latency (task creation -> SUCCEEDED) for each, on this machine's
-%    CPU/MPS (no dedicated GPU)
-%  - 2-3 screenshots/frames from the recorded demo video showing objects
-%    placed, dragged, and scaled
-%  - any generation failures encountered and how they were handled
-%  - informal robustness notes: voice input accuracy, mesh quality at
-%    32 inference steps, behaviour on repeated rapid prompts
-We evaluate the pipeline end-to-end using the webcam fallback path, since
-no AR-capable device was available for the WebXR path. \emph{[Results to
-be inserted once live generation runs are complete -- see TODO above.]}
+We evaluate the pipeline end-to-end using the webcam fallback path on the
+development machine (Apple Silicon, MPS backend, no dedicated GPU), since
+no AR-capable device was available for the WebXR path.
+
+\textbf{Generation latency.} The Shap-E weights are a one-time download
+(\textasciitilde{}1.4\,GB, \textasciitilde{}18 minutes on this
+connection; cached afterwards). With the pipeline loaded, three distinct
+prompts -- ``a small potted cactus'', ``a red toy race car'', and ``a
+wooden treasure chest'' -- were each generated end-to-end (task creation
+through a \texttt{SUCCEEDED} status and a servable GLB) in
+24--25\,seconds at 32 inference steps, verified both via direct HTTP
+calls against \texttt{/api/generate}/\texttt{/api/status} and through the
+browser UI. We also tried 64 steps (45\,seconds) for comparison; mesh
+quality was not meaningfully different, so 32 steps was kept as the
+default to favour interactivity.
+
+\textbf{A rendering bug found in testing.} The first end-to-end run in
+the browser rendered every generated object as a near-black blob. The
+cause was not Shap-E quality but a materials bug: the exported GLB
+carries per-vertex colour but no \texttt{material} entry, so
+\texttt{GLTFLoader} falls back to glTF's spec-default material
+(\texttt{metallicFactor=1}, \texttt{roughnessFactor=1}), which is
+essentially unlit under our ambient+directional lighting with no
+environment map. Fixing this client-side (forcing \texttt{metalness=0}
+and enabling vertex colours on any loaded mesh material, in both
+placement paths) resolved it for every subsequent generation and is
+robust to whichever generation backend produces the GLB.
+
+\textbf{Mesh quality and robustness.} Output meshes are coarse and
+somewhat blob-like rather than crisp -- consistent with Shap-E's known
+quality-for-speed trade-off relative to optimization-based methods like
+DreamFusion (Section~\ref{sec:related}) -- but colour and rough silhouette do track the
+prompt (e.g. the cactus generation was green and columnar; the treasure
+chest, brown and boxy). Sequential generations across different prompts
+completed without failure, and the threaded task model kept the server
+responsive to status polling throughout generation. Placement, drag,
+rescale, and delete were verified working against both a minimal test
+GLB and real generated output.
+
+\textbf{Not independently verified.} Voice input (Web Speech API) is
+implemented and was exercised for its UI wiring, but not tested with a
+live microphone in this sandboxed development setup; it depends only on
+a browser-standard API rather than any part of this project's own code.
+The WebXR hit-test path is implemented to specification but was never
+run on AR-capable hardware, for the reasons given in
+Section~\ref{sec:method}.
 
 \section{Discussion and Conclusion}
 AR-Prompt3D demonstrates that an interactive AI-generation-to-AR loop is
