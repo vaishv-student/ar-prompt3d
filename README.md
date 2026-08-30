@@ -16,22 +16,39 @@ generates it on the fly and places it in your real physical space.
     pointer and stay in screen-relative space.
   - `xrScene.js` — real WebXR `immersive-ar` hit-test path for devices
     that support it (untested on hardware, but standards-compliant).
-- **Server** (`server/app.py`): Python-standard-library-only static file
-  server + a proxy in front of Tripo3D's text-to-3D API, so the API key
-  never reaches the browser.
+- **Server** (`server/app.py`): Python static file server whose
+  `/api/generate` route runs **Shap-E** (OpenAI's text-to-3D model, via
+  Hugging Face `diffusers`) locally, in a background thread, rather than
+  calling a hosted API.
 
-No Node/npm is required anywhere in this project.
+Only the server needs Python packages (see below); the client itself
+needs no Node/npm and no build step.
+
+### Why local generation instead of a hosted API
+
+Both Meshy AI's and Tripo3D's REST APIs were tried first. Both require
+prepaid credits with no usable free tier for a fresh account, despite
+marketing claiming otherwise (Tripo3D's dashboard showed a $0 balance and
+"no card bound" even though sign-up is advertised as giving free credits).
+Running Shap-E locally sidesteps that entirely: no billing, and no risk of
+a demo failing later because a free-tier quota ran out. The proxy's
+`/api/generate` → `/api/status/{id}` → `/api/model/{id}.glb` contract is
+unchanged from the original hosted-API design, so the client needed zero
+changes for this pivot.
 
 ## Setup
 
-1. Get a Tripo3D API key: sign up at <https://platform.tripo3d.ai>, then
-   open the **API Keys** page and create one. New accounts get 300 free
-   credits (no card required), enough for many generations — each
-   untextured generation costs 10 credits.
+1. Install the Python dependencies (first run also downloads the Shap-E
+   model weights from Hugging Face Hub, a few hundred MB, cached after
+   that):
+
+   ```bash
+   pip3 install --user -r server/requirements.txt
+   ```
+
 2. Run:
 
    ```bash
-   export TRIPO_API_KEY=your_key_here
    python3 server/app.py 8000
    ```
 
@@ -39,28 +56,24 @@ No Node/npm is required anywhere in this project.
    Chromium-based browser; the rest works anywhere with WebGL).
 4. Click **Start (camera preview mode)** and allow camera access.
 5. Type or speak a prompt (e.g. "a small potted cactus"), click
-   **Generate**, wait for it to finish (progress bar shows Tripo3D's
-   reported percentage), then tap anywhere in the scene to place it.
+   **Generate**, wait for it to finish (progress bar shown while Shap-E
+   runs), then tap anywhere in the scene to place it.
 6. Click a placed object in the list to select it, then drag to move it
    or scroll/pinch to resize it. Delete with the ✕ button.
 
 On an ARCore-capable Android phone in Chrome, the start screen instead
 offers **Enter AR**, using the real WebXR hit-test path.
 
-If generation calls fail with a 502 and a message like "unexpected
-response", check the server's stderr log — it prints Tripo3D's raw JSON
-response for every call, since parts of Tripo3D's API reference are
-JS-rendered and couldn't be fully confirmed ahead of time; the response
-shape is usually enough to spot which field name needs adjusting in
-`server/app.py`.
-
 ## Open-source / third-party components
 
 - [Three.js](https://threejs.org) (MIT) — rendering, `GLTFLoader`.
 - [WebXR Device API](https://www.w3.org/TR/webxr/) — browser-native AR.
-- [Tripo3D](https://www.tripo3d.ai) — hosted text-to-3D generation API
-  (commercial, used via our own account; no model weights or proprietary
-  code redistributed).
+- [Shap-E](https://github.com/openai/shap-e) (OpenAI, MIT) via
+  [Hugging Face `diffusers`](https://huggingface.co/docs/diffusers) —
+  text-to-3D generation, run locally; pretrained weights from
+  [`openai/shap-e`](https://huggingface.co/openai/shap-e) on the Hub.
+- [trimesh](https://trimesh.org) (MIT) — PLY→GLB mesh conversion.
 
-All AR interaction logic (placement, selection, drag, scale) and the
-generation proxy server are original code written for this project.
+All AR interaction logic (placement, selection, drag, scale), the
+generation server, and the threaded task/progress/caching layer around
+Shap-E are original code written for this project.
