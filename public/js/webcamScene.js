@@ -65,6 +65,26 @@ export function createWebcamScene({ videoEl, canvasEl, onObjectsChanged, onPlaci
     return raycaster;
   }
 
+  function fixVertexColorMaterials(object3D) {
+    // Shap-E meshes carry per-vertex colour but no material, so GLTFLoader
+    // falls back to glTF's spec-default material (metalness 1, roughness
+    // 1) -- a fully metallic surface renders near-black under our simple
+    // ambient+directional lighting (no environment map for reflections).
+    // Force a diffuse material that actually shows the vertex colours.
+    object3D.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const mat of mats) {
+        if (mat.isMeshStandardMaterial) {
+          mat.metalness = 0;
+          mat.roughness = 1;
+          if (node.geometry.attributes.color) mat.vertexColors = true;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+  }
+
   function normalize(object3D) {
     const box = new THREE.Box3().setFromObject(object3D);
     const size = new THREE.Vector3();
@@ -84,6 +104,7 @@ export function createWebcamScene({ videoEl, canvasEl, onObjectsChanged, onPlaci
 
   async function beginPlacement(glbUrl, label) {
     const gltf = await loader.loadAsync(glbUrl);
+    fixVertexColorMaterials(gltf.scene);
     const group = normalize(gltf.scene);
     return new Promise((resolve) => {
       pending = { group, label, resolve };

@@ -44,8 +44,9 @@ GUIDANCE_SCALE = 15.0
 FRAME_SIZE = 64
 # Rough wall-clock estimate for this machine/config, used only to drive a
 # smooth-looking progress bar (diffusers' ShapEPipeline doesn't expose a
-# per-step callback) -- updated after the first real timed run.
-ESTIMATED_SECONDS = 90
+# per-step callback). Measured ~25s for a single generation on this
+# machine (Apple Silicon, MPS backend) once the pipeline is loaded.
+ESTIMATED_SECONDS = 28
 
 TASKS = {}
 TASKS_LOCK = threading.Lock()

@@ -51,6 +51,25 @@ export function createXRScene({ canvasEl, onObjectsChanged, onPlacingChange }) {
   let hitTestSource = null;
   let session = null;
 
+  function fixVertexColorMaterials(object3D) {
+    // See webcamScene.js's copy of this function for why: Shap-E meshes
+    // carry vertex colour but no material, so GLTFLoader's spec-default
+    // material (fully metallic) renders them near-black without an
+    // environment map.
+    object3D.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const mat of mats) {
+        if (mat.isMeshStandardMaterial) {
+          mat.metalness = 0;
+          mat.roughness = 1;
+          if (node.geometry.attributes.color) mat.vertexColors = true;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+  }
+
   function normalize(object3D) {
     const box = new THREE.Box3().setFromObject(object3D);
     const size = new THREE.Vector3();
@@ -70,6 +89,7 @@ export function createXRScene({ canvasEl, onObjectsChanged, onPlacingChange }) {
 
   async function beginPlacement(glbUrl, label) {
     const gltf = await loader.loadAsync(glbUrl);
+    fixVertexColorMaterials(gltf.scene);
     const group = normalize(gltf.scene);
     return new Promise((resolve) => {
       pending = { group, label, resolve };
