@@ -1,0 +1,203 @@
+% AR-Prompt3D -- Extended Reality 2025-2026 Supplemental Project (Topic 2)
+% Paste this file's content into the ACM SIGGRAPH Overleaf template:
+% https://www.overleaf.com/read/vtbyjvngrzgz#e28726
+% (replacing its sample body, keeping that project's acmart preamble).
+\documentclass[sigconf,nonacm]{acmart}
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\begin{document}
+
+\title{AR-Prompt3D: On-the-Fly AI-Generated 3D Content for Augmented Reality}
+
+\author{Vanshita Vaish}
+\affiliation{%
+  \institution{Trinity College Dublin}
+  \country{Ireland}
+}
+\email{vanshi.vaish@gmail.com}
+
+\begin{abstract}
+We present AR-Prompt3D, a web-based augmented reality system that lets a
+user describe an object by speech or text and see it appear, generated on
+the fly by an AI 3D-generation model, in their physical surroundings. The
+system separates concerns into a browser-based AR client (Three.js and the
+WebXR Device API), a lightweight server-side proxy that drives a
+text-to-3D generative model (Meshy AI) without exposing API credentials to
+the client, and an interaction layer for placing, moving, scaling and
+removing generated objects. We implement two AR presentation paths: a
+standards-compliant WebXR hit-test path for AR-capable devices, and a
+webcam-based passthrough fallback used for development and evaluation on
+hardware without AR support. We describe the architecture, the design
+trade-offs forced by not having access to AR-capable hardware during
+development, and evaluate the pipeline's latency, robustness, and
+usability.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+Augmented reality traditionally displays pre-authored 3D content: a
+developer models, textures, and ships an asset before an app is built.
+Recent advances in generative AI make it possible to synthesize novel 3D
+geometry directly from a natural-language description, at interactive
+(though not real-time) latencies. Combining this capability with AR lets a
+user populate an empty physical space with content that did not exist
+until they asked for it.
+
+This project implements such a system: a user speaks or types a prompt
+(e.g. ``a small potted cactus''), the system requests a 3D asset from a
+generative model, and the resulting mesh is placed into the user's live
+camera view, where it can be moved, rescaled, and removed. The core
+technical challenge is not any single component -- text-to-3D generation,
+AR placement, and 3D interaction are each individually well studied -- but
+gluing them into a single, responsive, on-the-fly pipeline where the
+content genuinely does not exist until the user asks for it.
+
+\subsection{Development constraint and its effect on design}
+No AR-capable headset or phone was available during development. Rather
+than build against a hypothetical device, we designed the system with two
+presentation back-ends behind a shared placement/interaction API: a
+spec-correct WebXR hit-test implementation for devices that support
+\texttt{immersive-ar} (untested on hardware, but standards-compliant), and
+a webcam-passthrough fallback that composites a live camera feed with a
+Three.js scene and a fixed-depth ray-cast placement heuristic in place of
+SLAM-based world tracking. The fallback is the path we develop and
+evaluate against in this report; Section~\ref{sec:method} explains the
+trade-off this implies.
+
+\section{Related Work}
+\textbf{Augmented reality.} Azuma's survey~\cite{azuma1997survey} defines
+AR by three properties: combining real and virtual content, real-time
+interactivity, and registration in 3D. Our webcam fallback satisfies the
+first two but only approximates the third, since it lacks the 6DOF
+tracking that dedicated AR frameworks (ARKit, ARCore) or the WebXR Device
+API's hit-test feature provide. The WebXR path we implement follows the
+W3C WebXR Device API specification~\cite{webxr-spec} and is the
+world-anchored equivalent once run on supported hardware.
+
+\textbf{AI 3D content generation.} Diffusion- and transformer-based models
+now generate 3D assets directly from text. DreamFusion~\cite{poole2022dreamfusion}
+optimizes a NeRF against a pretrained 2D text-to-image diffusion model via
+score distillation, at the cost of per-prompt optimization time (tens of
+minutes). Point-E~\cite{nichol2022pointe} and Shap-E~\cite{jun2023shape}
+instead train feed-forward conditional generative models over 3D
+representations (point clouds and implicit functions respectively),
+trading some quality for generation in seconds rather than minutes -- a
+much better fit for an interactive AR loop. We use Meshy AI's hosted
+text-to-3D API, a commercial system in this same feed-forward family,
+because it exposes a stable REST API and returns textured GLB meshes
+directly usable by a WebGL/WebXR renderer, letting us focus engineering
+effort on the AR integration rather than on training or hosting a
+generative model ourselves.
+
+\textbf{3D reconstruction for AR.} An alternative to generating content is
+reconstructing it from real objects, e.g. via 3D Gaussian
+Splatting~\cite{kerbl20233d}, which was the other topic option for this
+project. We chose generation over reconstruction because it does not
+require a physical object to already exist, and because rendering
+unconverted Gaussian primitives in real time on a WebXR target is
+considerably higher-risk engineering than loading a generated mesh.
+
+\section{Method / Implementation}
+\label{sec:method}
+
+\subsection{Architecture}
+The system has three parts, deliberately kept as plain, dependency-light
+web technology (vanilla JavaScript ES modules and a Python standard-library
+HTTP server) rather than a build-tooled framework, since it must run
+identically on the development machine and the grader's machine with zero
+install step:
+
+\begin{itemize}
+  \item \textbf{Client} (\texttt{public/}): Three.js scene management,
+  pointer/gesture interaction, Web Speech API voice input, and the two
+  presentation back-ends (WebXR hit-test, webcam passthrough).
+  \item \textbf{Server proxy} (\texttt{server/app.py}): a stdlib
+  \texttt{http.server}-based service that (a) serves the static client,
+  (b) creates and polls Meshy text-to-3D tasks on the client's behalf, and
+  (c) fetches and caches the resulting GLB so the Meshy API key is never
+  sent to the browser and the client never talks to a third-party origin
+  directly.
+  \item \textbf{Generative model}: Meshy AI's hosted text-to-3D endpoint,
+  used in \texttt{preview} mode (untextured geometry only) to minimize
+  latency in the interactive loop.
+\end{itemize}
+
+\subsection{Generation pipeline}
+On submitting a prompt, the client \texttt{POST}s to \texttt{/api/generate};
+the proxy creates a Meshy preview task and returns a task id. The client
+polls \texttt{/api/status/\{id\}} every two seconds, updating a visible
+progress bar from Meshy's reported completion percentage. On success, the
+proxy's \texttt{/api/model/\{id\}.glb} route streams (and disk-caches) the
+generated mesh so it can be fetched with a same-origin \texttt{GLTFLoader}
+request, sidestepping CORS and signed-URL-expiry concerns.
+
+\subsection{Placement and interaction}
+Once a mesh is loaded, its bounding box is used to recenter it on its own
+base and normalize it to a fixed target size, then the object enters a
+``pending placement'' state: a reticle follows the user's pointer,
+computed by casting a ray from the camera through the pointer position and
+taking a point at a fixed depth along that ray. A tap/click commits the
+object at that point. Once placed, an object can be re-selected (by
+raycasting against placed objects), dragged along a plane facing the
+camera at its current depth, and rescaled with the scroll/pinch gesture;
+a side panel lists all placed objects by their generating prompt and
+allows deletion.
+
+\subsection{Webcam fallback vs.\ WebXR: an honest trade-off}
+The webcam fallback has no real-world tracking: the ``camera'' is a fixed
+viewpoint at the origin, and the live video is a flat background layer
+behind it rather than a tracked passthrough feed. This means placed
+objects do not stay registered to a physical point in the room if the
+device is moved -- they are correctly described as screen-space composited
+rather than world-anchored. This is a direct, documented consequence of
+developing without AR-capable hardware, not an oversight: the WebXR
+hit-test path (Section~\ref{sec:method}) implements genuine world-anchored
+placement via the standard \texttt{immersive-ar} session and hit-test
+source API, and would provide true registration on supported hardware.
+
+\section{Experimental Results}
+% TODO(fill in after live testing with a real Meshy API key + real webcam):
+%  - table/list of >=3 tested prompts, observed end-to-end generation
+%    latency (task creation -> SUCCEEDED) for each
+%  - 2-3 screenshots/frames from the recorded demo video showing objects
+%    placed, dragged, and scaled
+%  - any generation failures encountered and how they were handled
+%  - informal robustness notes: voice input accuracy, behaviour on repeated
+%    rapid prompts, behaviour when Meshy is slow/unavailable
+We evaluate the pipeline end-to-end using the webcam fallback path, since
+no AR-capable device was available for the WebXR path. \emph{[Results to
+be inserted once live generation runs are complete -- see TODO above.]}
+
+\section{Discussion and Conclusion}
+AR-Prompt3D demonstrates that an interactive AI-generation-to-AR loop is
+achievable with a modest, dependency-light implementation: the hardest
+engineering problem in practice was not calling a generative model, but
+keeping the API key server-side, handling asynchronous polling and
+failure states gracefully, and making placement/interaction feel direct
+despite having no true 6DOF tracking on the development machine. The
+clearest limitation is exactly that lack of tracking in the fallback path;
+future work would validate the WebXR hit-test path on an actual
+ARCore-class device and compare registration quality directly against the
+webcam fallback. A second natural extension is background texturing:
+Meshy's \texttt{refine} stage (not used here, to keep the interactive loop
+fast) could run asynchronously after placement to upgrade a placed
+object's material without blocking the user.
+
+\section*{Open-Source and Third-Party Components}
+This project builds on the following open-source/third-party components,
+disclosed per the assignment's originality requirements: Three.js (MIT
+license, 3D rendering) and its \texttt{GLTFLoader}/\texttt{ARButton}
+example modules; the W3C WebXR Device API (browser-native, no license
+needed); and Meshy AI's hosted text-to-3D REST API (commercial, used via
+its documented API under our own account -- no model weights or
+proprietary code from Meshy are redistributed). All AR interaction logic,
+the placement/selection/drag/scale system, and the generation proxy server
+are original code written for this project.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
