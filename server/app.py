@@ -13,12 +13,18 @@ Usage:
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# Meshy task ids are UUIDs; reject anything else before it touches the
+# filesystem or gets forwarded upstream (defense against path traversal
+# via a crafted /api/status/<id> or /api/model/<id>.glb request).
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = ROOT / "public"
@@ -108,6 +114,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, 500)
 
     def _handle_status(self, task_id):
+        if not TASK_ID_RE.match(task_id):
+            return self._send_json({"error": "invalid task id"}, 400)
         try:
             result = meshy_request("GET", f"{MESHY_BASE}/{task_id}")
             status = result.get("status")
@@ -131,6 +139,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_model(self, filename):
         task_id = filename[:-len(".glb")] if filename.endswith(".glb") else filename
+        if not TASK_ID_RE.match(task_id):
+            return self._send_json({"error": "invalid task id"}, 400)
         cache_path = CACHE_DIR / f"{task_id}.glb"
         if not cache_path.exists():
             record = TASKS.get(task_id)
