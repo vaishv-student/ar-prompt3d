@@ -23,9 +23,9 @@ We present AR-Prompt3D, a web-based augmented reality system that lets a
 user describe an object by speech or text and see it appear, generated on
 the fly by an AI 3D-generation model, in their physical surroundings. The
 system separates concerns into a browser-based AR client (Three.js and the
-WebXR Device API), a lightweight server-side proxy that drives a
-text-to-3D generative model (Tripo3D) without exposing API credentials to
-the client, and an interaction layer for placing, moving, scaling and
+WebXR Device API), a Python server that runs a text-to-3D generative model
+(Shap-E) locally in a background thread rather than depending on a
+hosted API, and an interaction layer for placing, moving, scaling and
 removing generated objects. We implement two AR presentation paths: a
 standards-compliant WebXR hit-test path for AR-capable devices, and a
 webcam-based passthrough fallback used for development and evaluation on
@@ -85,17 +85,21 @@ minutes). Point-E~\cite{nichol2022pointe} and Shap-E~\cite{jun2023shape}
 instead train feed-forward conditional generative models over 3D
 representations (point clouds and implicit functions respectively),
 trading some quality for generation in seconds rather than minutes -- a
-much better fit for an interactive AR loop. We use Tripo3D's hosted
-text-to-3D API, a commercial system in this same feed-forward family,
-because it exposes a stable REST API and returns GLB meshes directly
-usable by a WebGL/WebXR renderer, letting us focus engineering effort on
-the AR integration rather than on training or hosting a generative model
-ourselves. (An initial implementation targeted Meshy AI instead; we
-switched after finding Meshy's REST API requires prepaid credits with no
-free tier, whereas Tripo3D grants new API accounts 300 free credits. The
-proxy server's provider-specific code is isolated behind the same
+much better fit for an interactive AR loop. We run Shap-E~\cite{jun2023shape}
+directly, via Hugging Face's \texttt{diffusers} implementation, rather
+than a hosted commercial API. This was not the original plan: we first
+targeted Meshy AI's hosted text-to-3D API, then Tripo3D's, and only moved
+to running the model ourselves after discovering that both require
+prepaid credits with no usable free tier for a fresh account -- Tripo3D
+advertises 300 free credits on sign-up, but the account created for this
+project showed a \$0 balance and no payment method on file. Running
+Shap-E locally removes that dependency for good: no billing, and no risk
+of a demo failing later because a third party's free-tier quota ran dry.
+The server's provider-specific code sits entirely behind the same
 \texttt{/api/generate}, \texttt{/api/status}, \texttt{/api/model} contract
-either way, so the swap did not touch the client at all.)
+regardless of which generation backend is behind it, so none of these
+three attempts touched the client at all -- a direct payoff of keeping
+that boundary strict from the start.
 
 \textbf{3D reconstruction for AR.} An alternative to generating content is
 reconstructing it from real objects, e.g. via 3D Gaussian
@@ -119,25 +123,33 @@ install step:
   \item \textbf{Client} (\texttt{public/}): Three.js scene management,
   pointer/gesture interaction, Web Speech API voice input, and the two
   presentation back-ends (WebXR hit-test, webcam passthrough).
-  \item \textbf{Server proxy} (\texttt{server/app.py}): a stdlib
-  \texttt{http.server}-based service that (a) serves the static client,
-  (b) creates and polls Tripo3D text-to-3D tasks on the client's behalf,
-  and (c) fetches and caches the resulting GLB so the Tripo3D API key is
-  never sent to the browser and the client never talks to a third-party
-  origin directly.
-  \item \textbf{Generative model}: Tripo3D's hosted text-to-3D endpoint,
-  called with texturing disabled (untextured geometry only) to minimize
-  latency in the interactive loop.
+  \item \textbf{Server} (\texttt{server/app.py}): a stdlib
+  \texttt{http.server}-based service that (a) serves the static client and
+  (b) runs Shap-E generation requests on a background thread per request,
+  tracking each as a task with a status and a coarse progress estimate so
+  the client-facing API looks identical to calling a hosted asynchronous
+  API, even though nothing leaves the machine.
+  \item \textbf{Generative model}: Shap-E (\texttt{openai/shap-e} weights
+  via Hugging Face \texttt{diffusers}), run with 32 denoising steps and
+  \texttt{output\_type="mesh"} to minimize latency in the interactive loop
+  while still producing a coloured (not flat-grey) mesh, since Shap-E's
+  implicit function encodes colour as well as geometry.
 \end{itemize}
 
 \subsection{Generation pipeline}
 On submitting a prompt, the client \texttt{POST}s to \texttt{/api/generate};
-the proxy creates a Tripo3D generation task and returns a task id. The
-client polls \texttt{/api/status/\{id\}} every two seconds, updating a
-visible progress bar from Tripo3D's reported completion percentage. On success, the
-proxy's \texttt{/api/model/\{id\}.glb} route streams (and disk-caches) the
-generated mesh so it can be fetched with a same-origin \texttt{GLTFLoader}
-request, sidestepping CORS and signed-URL-expiry concerns.
+the server creates a task record and immediately spawns a background
+thread to run it, returning a task id without blocking the request. The
+client polls \texttt{/api/status/\{id\}} every two seconds; a second
+lightweight thread updates that task's progress field on an
+estimated-duration curve while generation runs, since \texttt{diffusers}'
+\texttt{ShapEPipeline} does not expose a per-denoising-step callback. On
+success, the worker thread exports the mesh to PLY, converts it to GLB
+with \texttt{trimesh} (Shap-E's coordinate convention orients the mesh
+for viewing from below, so this step also applies a corrective rotation),
+and writes it to a small on-disk cache; \texttt{/api/model/\{id\}.glb}
+then serves that file directly with a same-origin \texttt{GLTFLoader}
+request.
 
 \subsection{Placement and interaction}
 Once a mesh is loaded, its bounding box is used to recenter it on its own
@@ -164,14 +176,15 @@ placement via the standard \texttt{immersive-ar} session and hit-test
 source API, and would provide true registration on supported hardware.
 
 \section{Experimental Results}
-% TODO(fill in after live testing with a real Tripo3D API key + real webcam):
+% TODO(fill in after live local-generation + real webcam testing is done):
 %  - table/list of >=3 tested prompts, observed end-to-end generation
-%    latency (task creation -> SUCCEEDED) for each
+%    latency (task creation -> SUCCEEDED) for each, on this machine's
+%    CPU/MPS (no dedicated GPU)
 %  - 2-3 screenshots/frames from the recorded demo video showing objects
 %    placed, dragged, and scaled
 %  - any generation failures encountered and how they were handled
-%  - informal robustness notes: voice input accuracy, behaviour on repeated
-%    rapid prompts, behaviour when Tripo3D is slow/unavailable
+%  - informal robustness notes: voice input accuracy, mesh quality at
+%    32 inference steps, behaviour on repeated rapid prompts
 We evaluate the pipeline end-to-end using the webcam fallback path, since
 no AR-capable device was available for the WebXR path. \emph{[Results to
 be inserted once live generation runs are complete -- see TODO above.]}
@@ -180,27 +193,36 @@ be inserted once live generation runs are complete -- see TODO above.]}
 AR-Prompt3D demonstrates that an interactive AI-generation-to-AR loop is
 achievable with a modest, dependency-light implementation: the hardest
 engineering problem in practice was not calling a generative model, but
-keeping the API key server-side, handling asynchronous polling and
+absorbing the repeated discovery that two different commercial
+text-to-3D providers were not actually usable for free as advertised, and
+doing so without touching the client -- a direct consequence of designing
+the server around a fixed task-based API contract from the start rather
+than coupling the client to any one provider's request/response shape.
+The remaining engineering work -- handling asynchronous polling and
 failure states gracefully, and making placement/interaction feel direct
-despite having no true 6DOF tracking on the development machine. The
-clearest limitation is exactly that lack of tracking in the fallback path;
-future work would validate the WebXR hit-test path on an actual
-ARCore-class device and compare registration quality directly against the
-webcam fallback. A second natural extension is background texturing:
-Tripo3D's texture option (disabled here, to keep the interactive loop
-fast) could run asynchronously after placement to upgrade a placed
-object's material without blocking the user.
+despite having no true 6DOF tracking on the development machine -- was
+comparatively straightforward. The clearest limitation is exactly that
+lack of tracking in the webcam fallback path; future work would validate
+the WebXR hit-test path on an actual ARCore-class device and compare
+registration quality directly against the webcam fallback. A second
+natural extension is enabling Shap-E's higher-step-count / larger
+\texttt{frame\_size} settings for higher-fidelity meshes once running
+asynchronously in the background is no longer on the critical interactive
+path, e.g. by upgrading a placed object in place once a slower, higher-quality
+regeneration finishes.
 
 \section*{Open-Source and Third-Party Components}
 This project builds on the following open-source/third-party components,
 disclosed per the assignment's originality requirements: Three.js~\cite{threejs}
 (MIT license, 3D rendering) and its \texttt{GLTFLoader}/\texttt{ARButton}
 example modules; the W3C WebXR Device API~\cite{webxr-spec} (browser-native,
-no license needed); and Tripo3D's~\cite{tripo3d} hosted text-to-3D REST
-API (commercial, used via its documented API under our own account -- no
-model weights or proprietary code from Tripo3D are redistributed). All AR interaction logic,
-the placement/selection/drag/scale system, and the generation proxy server
-are original code written for this project.
+no license needed); OpenAI's Shap-E~\cite{jun2023shape} model and
+pretrained \texttt{openai/shap-e} weights, run through Hugging Face's
+\texttt{diffusers}~\cite{diffusers} library (both MIT-licensed); and
+\texttt{trimesh}~\cite{trimesh} (MIT) for PLY-to-GLB mesh conversion. All
+AR interaction logic, the placement/selection/drag/scale system, and the
+threaded task/progress/caching layer around Shap-E are original code
+written for this project.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{references}
