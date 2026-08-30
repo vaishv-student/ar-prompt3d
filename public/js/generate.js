@@ -1,5 +1,5 @@
 /**
- * Client for the local /api/* proxy in front of Meshy's text-to-3D API.
+ * Client for the local /api/* proxy in front of Tripo3D's text-to-3D API.
  * Handles task creation and polling; resolves with a same-origin GLB URL.
  */
 

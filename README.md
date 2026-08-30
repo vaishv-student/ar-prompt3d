@@ -17,18 +17,21 @@ generates it on the fly and places it in your real physical space.
   - `xrScene.js` — real WebXR `immersive-ar` hit-test path for devices
     that support it (untested on hardware, but standards-compliant).
 - **Server** (`server/app.py`): Python-standard-library-only static file
-  server + a proxy in front of Meshy AI's text-to-3D API, so the API key
+  server + a proxy in front of Tripo3D's text-to-3D API, so the API key
   never reaches the browser.
 
 No Node/npm is required anywhere in this project.
 
 ## Setup
 
-1. Get a Meshy API key at <https://www.meshy.ai/settings/api>.
+1. Get a Tripo3D API key: sign up at <https://platform.tripo3d.ai>, then
+   open the **API Keys** page and create one. New accounts get 300 free
+   credits (no card required), enough for many generations — each
+   untextured generation costs 10 credits.
 2. Run:
 
    ```bash
-   export MESHY_API_KEY=your_key_here
+   export TRIPO_API_KEY=your_key_here
    python3 server/app.py 8000
    ```
 
@@ -36,7 +39,7 @@ No Node/npm is required anywhere in this project.
    Chromium-based browser; the rest works anywhere with WebGL).
 4. Click **Start (camera preview mode)** and allow camera access.
 5. Type or speak a prompt (e.g. "a small potted cactus"), click
-   **Generate**, wait for it to finish (progress bar shows Meshy's
+   **Generate**, wait for it to finish (progress bar shows Tripo3D's
    reported percentage), then tap anywhere in the scene to place it.
 6. Click a placed object in the list to select it, then drag to move it
    or scroll/pinch to resize it. Delete with the ✕ button.
@@ -44,11 +47,18 @@ No Node/npm is required anywhere in this project.
 On an ARCore-capable Android phone in Chrome, the start screen instead
 offers **Enter AR**, using the real WebXR hit-test path.
 
+If generation calls fail with a 502 and a message like "unexpected
+response", check the server's stderr log — it prints Tripo3D's raw JSON
+response for every call, since parts of Tripo3D's API reference are
+JS-rendered and couldn't be fully confirmed ahead of time; the response
+shape is usually enough to spot which field name needs adjusting in
+`server/app.py`.
+
 ## Open-source / third-party components
 
 - [Three.js](https://threejs.org) (MIT) — rendering, `GLTFLoader`.
 - [WebXR Device API](https://www.w3.org/TR/webxr/) — browser-native AR.
-- [Meshy AI](https://www.meshy.ai) — hosted text-to-3D generation API
+- [Tripo3D](https://www.tripo3d.ai) — hosted text-to-3D generation API
   (commercial, used via our own account; no model weights or proprietary
   code redistributed).
 

@@ -1,13 +1,18 @@
 """
-Static file server + Meshy text-to-3D proxy for AR-Prompt3D.
+Static file server + Tripo3D text-to-3D proxy for AR-Prompt3D.
 
 Runs with the Python 3 standard library only (no npm/node, no pip installs
-needed). The proxy exists so the Meshy API key never reaches the browser and
-so the client doesn't have to deal with Meshy's CORS/signed-URL rules
-directly.
+needed). The proxy exists so the Tripo3D API key never reaches the browser
+and so the client doesn't have to deal with a third-party origin's CORS or
+signed-URL rules directly.
+
+Tripo3D was chosen over Meshy AI (the original target) because Meshy's REST
+API requires prepaid credits with no free tier, while new Tripo3D API
+accounts get 300 free credits (no card required), enough for many
+generations during development and grading.
 
 Usage:
-    export MESHY_API_KEY="your_key_here"
+    export TRIPO_API_KEY="your_key_here"
     python3 server/app.py [port]
 """
 
@@ -21,38 +26,51 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# Meshy task ids are UUIDs; reject anything else before it touches the
-# filesystem or gets forwarded upstream (defense against path traversal
-# via a crafted /api/status/<id> or /api/model/<id>.glb request).
-TASK_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+# Tripo3D task ids are opaque tokens; reject anything else before it
+# touches the filesystem or gets forwarded upstream (defense against path
+# traversal via a crafted /api/status/<id> or /api/model/<id>.glb request).
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = ROOT / "public"
 CACHE_DIR = ROOT / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
-MESHY_API_KEY = os.environ.get("MESHY_API_KEY", "")
-MESHY_BASE = "https://api.meshy.ai/openapi/v2/text-to-3d"
+TRIPO_API_KEY = os.environ.get("TRIPO_API_KEY", "")
+TRIPO_BASE = "https://openapi.tripo3d.ai/v3"
+# Overridable in case the API requires an explicit "model" field; leave
+# unset to omit the field and let Tripo3D pick its own default first.
+TRIPO_MODEL = os.environ.get("TRIPO_MODEL", "")
 
 # In-memory record of tasks we've created, so /api/model/<id>.glb knows
-# where to fetch the signed asset from without re-polling Meshy.
+# where to fetch the asset from without re-polling Tripo3D.
 TASKS = {}
 
 
-def meshy_request(method, url, body=None):
-    if not MESHY_API_KEY:
+def tripo_request(method, url, body=None):
+    if not TRIPO_API_KEY:
         raise RuntimeError(
-            "MESHY_API_KEY is not set. Get a key at "
-            "https://www.meshy.ai/settings/api and run:\n"
-            "  export MESHY_API_KEY=your_key_here"
+            "TRIPO_API_KEY is not set. Get a key at "
+            "https://platform.tripo3d.ai (API Keys page) and run:\n"
+            "  export TRIPO_API_KEY=your_key_here"
         )
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {MESHY_API_KEY}")
+    req.add_header("Authorization", f"Bearer {TRIPO_API_KEY}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8")
+        sys.stderr.write(f"[tripo] {method} {url} -> {raw[:500]}\n")
+        return json.loads(raw)
+
+
+def _unwrap(result):
+    """Tripo3D wraps responses as {code, data, message}; unwrap defensively
+    since the exact envelope wasn't confirmed against live docs."""
+    if isinstance(result, dict) and "data" in result:
+        return result["data"]
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -96,20 +114,23 @@ class Handler(BaseHTTPRequestHandler):
             prompt = (body.get("prompt") or "").strip()
             if not prompt:
                 return self._send_json({"error": "prompt is required"}, 400)
-            result = meshy_request("POST", MESHY_BASE, {
-                "mode": "preview",
+            req_body = {
+                "type": "text_to_model",
                 "prompt": prompt[:600],
-                "ai_model": "latest",
-                "target_polycount": 15000,
-                "should_remesh": True,
-            })
-            task_id = result["result"]
+                "texture": False,  # keep the interactive loop fast; see report
+            }
+            if TRIPO_MODEL:
+                req_body["model"] = TRIPO_MODEL
+            result = _unwrap(tripo_request("POST", f"{TRIPO_BASE}/generation/text-to-model", req_body))
+            task_id = result.get("task_id") or result.get("id")
+            if not task_id:
+                return self._send_json({"error": f"unexpected create response: {result}"}, 502)
             TASKS[task_id] = {"prompt": prompt, "created": time.time()}
             self._send_json({"taskId": task_id})
         except RuntimeError as e:
             self._send_json({"error": str(e)}, 500)
         except urllib.error.HTTPError as e:
-            self._send_json({"error": f"Meshy API error: {e.read().decode('utf-8', 'ignore')}"}, 502)
+            self._send_json({"error": f"Tripo3D API error ({e.code}): {e.read().decode('utf-8', 'ignore')}"}, 502)
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
@@ -117,23 +138,33 @@ class Handler(BaseHTTPRequestHandler):
         if not TASK_ID_RE.match(task_id):
             return self._send_json({"error": "invalid task id"}, 400)
         try:
-            result = meshy_request("GET", f"{MESHY_BASE}/{task_id}")
-            status = result.get("status")
-            out = {
-                "status": status,
-                "progress": result.get("progress", 0),
-            }
+            result = _unwrap(tripo_request("GET", f"{TRIPO_BASE}/tasks/{task_id}"))
+            raw_status = str(result.get("status", "")).lower()
+            progress = result.get("progress", 0)
+            # normalize onto the same vocabulary the client expects
+            if raw_status in ("success", "succeeded", "completed", "done"):
+                status = "SUCCEEDED"
+            elif raw_status in ("failed", "error", "cancelled", "canceled"):
+                status = "FAILED"
+            else:
+                status = "IN_PROGRESS"
+            out = {"status": status, "progress": progress, "_raw_status": raw_status}
             if status == "SUCCEEDED":
-                glb_url = result.get("model_urls", {}).get("glb")
+                output = result.get("output", {}) or {}
+                glb_url = output.get("model_url") or output.get("pbr_model") or output.get("base_model")
+                if not glb_url:
+                    return self._send_json(
+                        {"error": f"succeeded but no model URL found in response: {result}"}, 502
+                    )
                 TASKS.setdefault(task_id, {})["glbUrl"] = glb_url
                 out["glbUrl"] = f"/api/model/{task_id}.glb"
             elif status == "FAILED":
-                out["error"] = result.get("task_error", {}).get("message", "generation failed")
+                out["error"] = result.get("message") or result.get("error") or "generation failed"
             self._send_json(out)
         except RuntimeError as e:
             self._send_json({"error": str(e)}, 500)
         except urllib.error.HTTPError as e:
-            self._send_json({"error": f"Meshy API error: {e.read().decode('utf-8', 'ignore')}"}, 502)
+            self._send_json({"error": f"Tripo3D API error ({e.code}): {e.read().decode('utf-8', 'ignore')}"}, 502)
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
@@ -146,11 +177,12 @@ class Handler(BaseHTTPRequestHandler):
             record = TASKS.get(task_id)
             glb_url = record.get("glbUrl") if record else None
             if not glb_url:
-                # Fall back to asking Meshy directly in case our in-memory
-                # record was lost (e.g. server restarted).
+                # Fall back to asking Tripo3D directly in case our
+                # in-memory record was lost (e.g. server restarted).
                 try:
-                    result = meshy_request("GET", f"{MESHY_BASE}/{task_id}")
-                    glb_url = result.get("model_urls", {}).get("glb")
+                    result = _unwrap(tripo_request("GET", f"{TRIPO_BASE}/tasks/{task_id}"))
+                    output = result.get("output", {}) or {}
+                    glb_url = output.get("model_url") or output.get("pbr_model") or output.get("base_model")
                 except Exception as e:
                     return self._send_json({"error": str(e)}, 502)
             if not glb_url:
@@ -204,10 +236,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    if not MESHY_API_KEY:
+    if not TRIPO_API_KEY:
         print(
-            "WARNING: MESHY_API_KEY is not set. Generation requests will "
-            "fail until you run:\n  export MESHY_API_KEY=your_key_here",
+            "WARNING: TRIPO_API_KEY is not set. Generation requests will "
+            "fail until you run:\n  export TRIPO_API_KEY=your_key_here",
             file=sys.stderr,
         )
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
