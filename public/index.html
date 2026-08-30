@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>AR-Prompt3D</title>
+<link rel="stylesheet" href="/css/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <video id="camera-feed" autoplay playsinline muted></video>
+  <canvas id="three-canvas"></canvas>
+
+  <div id="start-screen" class="overlay-panel">
+    <h1>AR-Prompt3D</h1>
+    <p>Describe an object by voice or text. An AI model generates it on the
+       fly and places it in your real space.</p>
+    <button id="start-webcam-btn" class="primary-btn">Start (camera preview mode)</button>
+    <button id="start-ar-btn" class="primary-btn" hidden>Enter AR</button>
+    <p id="ar-support-note" class="hint"></p>
+  </div>
+
+  <div id="error-banner" hidden></div>
+
+  <div id="ui-overlay" hidden>
+    <div id="status-bar">
+      <span id="mode-label"></span>
+    </div>
+
+    <div id="progress-panel" hidden>
+      <div id="progress-track"><div id="progress-fill"></div></div>
+      <span id="progress-text">Generating…</span>
+    </div>
+
+    <div id="object-panel">
+      <ul id="object-list"></ul>
+    </div>
+
+    <div id="prompt-bar">
+      <input id="prompt-input" type="text" maxlength="600"
+             placeholder="e.g. a small potted cactus" autocomplete="off" />
+      <button id="mic-btn" title="Speak your prompt">🎤</button>
+      <button id="generate-btn" class="primary-btn">Generate</button>
+    </div>
+    <p id="placement-hint" hidden>Tap anywhere in the scene to place it.</p>
+  </div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
